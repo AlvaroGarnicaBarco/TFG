@@ -1,0 +1,257 @@
+---
+title: "EDA (análisis exploratorio datos)"
+author: "Álvaro Garnica"
+date: "1/11/2020"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Carga de librerías
+```{r, include=FALSE}
+library(factoextra)
+library(gtools)
+library(corrplot)
+library(formattable)
+library(leaflet)
+library(geojsonio)
+library(dplyr)
+library(data.table)
+library(formattable)
+```
+```{r, include=FALSE}
+options(scipen=999, digits = 3)
+```
+
+#### Importacion de datos
+```{r, include=FALSE}
+load('data.RData')
+paises <- geojsonio::geojson_read("world.json", what = "sp") #Para realizar el map plot hace falta este archivo Geojson con las coordenadas de los polígonos (contorno de los países)
+paises<- sp::merge(x = paises, y = data, by.x = 'iso_a3', by.y ='cod_pais', all.x = FALSE)
+datos_aux <- paises[,c(1,19,65:88)]@data
+datos_aux <- datos_aux[order(datos_aux$iso_a3),]
+rownames(datos_aux) <- datos_aux$name
+paises <- paises[order(paises$iso_a3),19]
+```
+
+
+##Tabla explicativa variables
+```{r}
+tabla_descriptiva <- formattable(data.frame(cbind(attributes(data)$names, 
+                                                  attributes(data)$descripcion_variables,
+                                                  attributes(data)$unidad_variable), 
+                                            row.names = NULL))
+colnames(tabla_descriptiva) <- c('Variable', 'Descripción', 'Unidad de medida')
+tabla_descriptiva
+```
+
+
+correlacion entre variables
+```{r}
+corrplot(cor(data[-1]), method = 'square',  tl.cex = 0.5)
+```
+
+
+
+## Análisis de componentes principales (PCA)
+
+tabla de eigenvalues
+```{r}
+data.pca <- prcomp(data[,2:25], center = TRUE,scale. = TRUE)
+```
+```{r}
+tabla_eigenvalues <- formattable(data.frame(cbind(round(summary(data.pca)$importance[1,]^2,3),
+                                                  round(summary(data.pca)$importance[2,],3),
+                                                  summary(data.pca)$importance[3,])))
+colnames(tabla_eigenvalues) = c('varianza', '% varianza', 'varianza acumulada')
+tabla_eigenvalues
+```
+
+
+
+#### individuos sobre las dos primeras componentes (por niveles de la variable esperanza_vida)
+```{r}
+fviz_pca_ind(data.pca, 
+             axes = c(1,2), 
+             geom = 'text', 
+             habillage = quantcut(data$desempleo, q=3), 
+             palette="Dark2",
+             addEllipses=TRUE, 
+             ellipse.level=0.9) + 
+  labs(title =(""),
+       x = "PC3",
+       y = "PC4") + 
+  theme(legend.title = element_blank()) +
+  theme_linedraw(base_line_size = 1, base_rect_size = 0.2) +
+  xlim(-8.7,7) + 
+  ylim(-4,4)
+```
+
+#### variables sobre las 4 primeras componentes
+
+```{r}
+fviz_pca_var(data.pca, 
+             axes = c(1,2),  
+             select.var= list(name = c())) +
+  labs(title =(""), 
+       x = "Dim 1",
+       y = "Dim 2") + 
+  theme_linedraw(base_line_size = 1,
+                 base_rect_size = 0.5) +
+  xlim(-1.5,1.5)
+
+fviz_pca_var(data.pca, 
+             axes = c(3,4),  
+             select.var= list(name = c())) +
+  labs(title =(""), 
+       x = "Dim 3",
+       y = "Dim 4") + 
+  theme_linedraw(base_line_size = 1,
+                 base_rect_size = 0.5) +
+  xlim(-1.5,1.5)
+```
+Otra manera de verlo
+```{r}
+var <- get_pca_var(data.pca)
+corrplot(var$cor, is.corr=FALSE)
+```
+
+#### Biplot de individuos y variables sobre las dos primeras componentes
+```{r, warning=FALSE}
+fviz_pca_biplot(data.pca,
+                axes = c(1,2), 
+                label = 'var', 
+                habillage = quantcut(data$esperanza_vida, q=3),
+                palette="Dark2") + 
+  labs(title =(""),
+       x = "Dim 1", 
+       y = "Dim 2") + 
+  theme_linedraw(base_line_size = 1,
+                 base_rect_size = 0.2) + 
+  xlim(-7,6.5) +
+  ylim(-3.9, 4)
+
+fviz_pca_biplot(data.pca,
+                axes = c(3,4),
+                geom = 'text',
+                palette="Dark2") + 
+  labs(title =(""),
+       x = "Dim 1", 
+       y = "Dim 2") + 
+  theme_linedraw(base_line_size = 1,
+                 base_rect_size = 0.2) + 
+  xlim(-7,6.5) +
+  ylim(-3.9, 4)
+```
+
+
+
+
+## CLUSTER PROFILING
+
+```{r}
+datos_aux.pca <- prcomp(datos_aux[,3:26], center = TRUE,scale. = TRUE) #nos hacen falta datos geograficos por lo que se coge datos_aux
+```
+
+#### kmeans clustering
+
+utilizar la elbow-rule para decidir k
+```{r}
+fviz_nbclust(datos_aux.pca$x, kmeans, method = "wss") + 
+  geom_line(aes(group=1), colour="black") + 
+  geom_point(size=1, colour="#CC0000") +
+  xlab('Número de clusters k') +
+  ylab('suma de cuadrados intra-cluster') +
+  theme_bw()
+```
+se coge k = 3
+
+```{r}
+set.seed(123)
+km <- kmeans(datos_aux.pca$x, 3, nstart = 25)
+```
+```{r} 
+km$cluster[km$cluster == 1] <- 99    #(cambio cluster 1 por 2 porque me gusta mas así)
+km$cluster[km$cluster == 2] <- 1
+km$cluster[km$cluster == 99] <- 2
+```
+
+tamaño de los clusters
+```{r}
+km$size
+```
+
+cluster means de las primeras 4 componentes
+```{r}
+rownames(km$centers) <- c("Cluster 2", "Cluster 1", "Cluster 3")
+km$centers[,1:4][c("Cluster 1","Cluster 2", "Cluster 3"),]
+```
+
+
+#### profiling
+```{r}
+fviz_pca_ind(datos_aux.pca, axes = c(1,2), geom = 'point', habillage = km$cluster, palette = c("seagreen", "firebrick", "dodgerblue"), addEllipses=TRUE, ellipse.level=0.9, legend.title ="clusters") + labs(x = "PC1", y = "PC2") + theme_linedraw(base_line_size = 1, base_rect_size = 0.2) + xlim(-8.1,6) + ylim(-4,4.2) + ggtitle("Clusters sobre las dimensiones 1 y 2") + theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+
+fviz_pca_ind(datos_aux.pca, axes = c(3,4), geom = 'point', habillage = km$cluster, palette = c("seagreen", "firebrick", "dodgerblue"), addEllipses=TRUE, ellipse.level=0.9, legend.title ="clusters") + labs(x = "PC3", y = "PC4") + theme_linedraw(base_line_size = 1, base_rect_size = 0.2) + ggtitle("Clusters sobre las dimensiones 3 y 4") + theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+biplot con solo top12 variables contribuyentes
+```{r, warning=F}
+fviz_pca_biplot(datos_aux.pca, select.var = list(contrib = 12), axes = c(1,2), label = 'var', habillage = km$cluster, palette = c("seagreen", "firebrick", "dodgerblue"), addEllipses=TRUE, ellipse.level=0.9, legend.title ="clusters") + labs(x = "PC1", y = "PC2") + theme_linedraw(base_line_size = 1, base_rect_size = 0.2) + xlim(-8.1,6) + ylim(-4,4.2) + ggtitle("Clusters sobre las dimensiones 1 y 2") + theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+
+fviz_pca_biplot(datos_aux.pca, select.var = list(contrib =12), axes = c(3,4), label = 'var', habillage = km$cluster, palette = c("seagreen", "firebrick", "dodgerblue"), addEllipses=TRUE, ellipse.level=0.9, legend.title ="clusters") + labs(x = "PC3", y = "PC4") + theme_linedraw(base_line_size = 1, base_rect_size = 0.2) + xlim(-8.1,6) + ylim(-4,4.2) + ggtitle("Clusters sobre las dimensiones 3 y 4") + theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+mapa por cluster
+```{r}
+pal <- colorBin(c("seagreen", "firebrick", "dodgerblue"), domain = km$cluster)
+labels <-sprintf("<strong>%s" ,datos_aux$name) %>% lapply(htmltools::HTML)
+```
+```{r}
+leaflet(paises) %>% 
+      addTiles() %>% 
+      addPolygons(fillColor = ~pal(km$cluster), 
+                  weight = 1,
+                  opacity = 1,
+                  color = "white",
+                  dashArray = "1",
+                  fillOpacity = 1,
+                  highlight = highlightOptions(
+                    weight = 3, color = "#FFFFB3", 
+                    bringToFront = TRUE),
+                  label = labels,
+                  labelOptions = labelOptions(
+                    style = list("font-weight" = "normal", padding = "3px 8px"),
+                    textsize = "15px",
+                    direction = "auto")) %>%
+       addLegend(colors = c("seagreen", "firebrick", "dodgerblue"), values = km$cluster, opacity = 1, title = NULL,
+                position = "bottomleft", labels = c('Cluster 1','Cluster 2','Cluster 3'))
+```
+
+```{r}
+#porcentaje de poblacion mundial en cada cluster
+sum(datos_aux[rownames(datos_aux) %in% names(km$cluster[km$cluster == 1]),]$Poblacion) / sum(datos_aux$Poblacion)
+sum(datos_aux[rownames(datos_aux) %in% names(km$cluster[km$cluster == 2]),]$Poblacion) / sum(datos_aux$Poblacion)
+sum(datos_aux[rownames(datos_aux) %in% names(km$cluster[km$cluster == 3]),]$Poblacion) / sum(datos_aux$Poblacion)
+```
+
+
+```{r}
+t_datos_aux <- transpose(aggregate(datos_aux[,3:26], list(km$cluster), mean)[2:25])
+colnames(t_datos_aux) <- c('Cluster 1', 'Cluster 2', 'Cluster 3')
+rownames(t_datos_aux) <- attributes(data)$descripcion_variables[2:25]
+formattable(t_datos_aux, lapply(1:nrow(t_datos_aux), function(row) {
+  area(row) ~ color_bar("lightblue")
+}))
+```
+
+
+
+
+

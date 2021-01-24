@@ -1,0 +1,689 @@
+---
+title: "Modelización"
+author: "Álvaro Garnica"
+date: "14/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### librerías y datos
+```{r, echo = FALSE, warning = FALSE}
+library(dplyr)
+library(glmnet)
+library(caTools)
+library(caret)
+library(broom)
+library(QuantPsyc)
+library(scales)
+library(tibble)
+library(data.table)
+library(pls)
+library(formattable)
+library(corrplot)
+library(gglasso)
+```
+```{r, include=FALSE}
+options(scipen=999, digits = 3)
+```
+```{r}
+load('data.RData')
+```
+
+#### división de los datos en train y test
+```{r}
+set.seed(123)
+sample = sample.split(data,SplitRatio = 0.67)
+train = subset(data[,-1], sample ==TRUE) 
+test = subset(data[,-1], sample==FALSE)
+
+x_train <- train[, -23]
+y_train <- train$esperanza_vida
+  
+x_test <- test[, -23]
+y_test <- test$esperanza_vida
+```
+
+
+
+
+
+## regresion lineal múltiple
+```{r}
+rl <- lm(esperanza_vida ~ ., train)
+```
+
+grafico de coeficientes estandarizados
+```{r}
+rl_coeficientes <- lm.beta(rl) %>%
+                   enframe(name = "predictor", value = "coeficiente")
+
+rl_coeficientes %>%
+  filter(predictor != "(Intercept)") %>%
+  ggplot(aes(x = predictor, y = coeficiente)) +
+  geom_col() +
+  labs(title = "Coeficientes del modelo OLS") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 5, angle = 45))
+```
+
+pvalor de los coeficientes
+```{r}
+rl_coef= rl %>% tidy
+
+ggplot(rl_coef, 
+       aes(reorder(term, p.value),
+           p.value, 
+           fill=p.value)) +
+  geom_bar(stat = 'identity', 
+           aes(fill=p.value)) +
+  geom_hline(yintercept = 0.05) +
+  labs(title = "P-valor de los regresores",
+       x="", 
+       y="p-valor") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90), 
+        legend.title=element_blank(),
+        plot.title = element_text(hjust = 0.5)) + 
+  scale_fill_gradient2(high='firebrick', 
+                       low = 'yellow2',
+                       mid='orange2',
+                       midpoint = 0.5 )
+```
+
+metricas de error
+```{r}
+rl.pred.train <- predict(rl, newdata = train)
+rl.pred.test <- predict(rl, newdata = test)
+```
+
+```{r}
+postResample(y_train, rl.pred.train)[c(1,3)]
+postResample(y_test, rl.pred.test)[c(1,3)]
+rl.r2_test <-1 - (sum((y_test - rl.pred.test)^2)/sum((y_test - mean(y_test))^2))
+
+rl.rtrain <- summary(rl)$adj.r.squared #radjusted del train
+rl.rtest <- 1-(66/43)*(1-rl.r2_test) #calculo de radjusted del test
+rl.rtrain
+rl.rtest
+```
+
+
+
+
+
+
+## RIDGE
+
+se crea una grid de lambdas
+```{r}
+lambdas = rev(seq(0, 5, by = 0.01))
+```
+
+cv.glmnet hace cross-validation para elegir la mejor lambda
+```{r, warning = FALSE}
+#buscamos min lambda por cross validation
+cv.ridge <- cv.glmnet(data.matrix(x_train),
+                      y_train, 
+                      alpha = 0, #alpha = 0 = ridge
+                      lambda = lambdas, 
+                      nfolds = nrow(x_train)) #loocv ya que hay pocos datos
+#aplicamos en el modelo la min lambda
+ridge <- glmnet(x = data.matrix(x_train),
+                y = y_train,
+                alpha = 0,
+                lambda  = cv.ridge$lambda.min)
+```
+
+
+```{r, warning = FALSE}
+paste("Mejor valor de lambda encontrado:", cv.ridge$lambda.min)
+```
+
+Evolución del error en funcion de lambda
+```{r, warning = FALSE}
+ggplot(data = NULL, aes(log(cv.ridge$lambda), sqrt(cv.ridge$cvm))) + 
+  geom_point() +
+  ylim(2.91,3.01) + 
+  xlab('log(λ)') + 
+  ylab('RMSE') + 
+  geom_vline(xintercept = log(cv.ridge$lambda.min), linetype="dashed", 
+                color = "red", size=0.5)
+```
+
+cambio percentual de coeficientes
+```{r}
+cambio <-(coef(ridge) - coef(rl))/coef(rl)
+cambio_ridge_coeficientes <- cambio  %>%
+                   as.matrix() %>%
+                   as_tibble(rownames = "predictor") %>%
+                   rename(coeficiente = s0)
+
+print(cambio_ridge_coeficientes, n = 24) #ejcutar esto en la console para q salga con colores
+```
+
+evolución de los coeficientes en función de lambda
+```{r}
+ridge2 <- glmnet(x = data.matrix(x_train),
+                y = y_train,
+                alpha = 0,
+                lambda  = rev(seq(0,100, by = 0.1)))
+
+regularizacion_ridge <- ridge2$beta %>% 
+                  as.matrix() %>%
+                  t() %>% 
+                  as_tibble() %>%
+                  mutate(lambda = ridge2$lambda)
+
+dridge <- melt(regularizacion_ridge, id.vars="lambda")
+```
+```{r}
+ggplot(dridge, aes(lambda, value, col=variable)) +
+  geom_line() +
+  labs(title = "Coeficientes del modelo en función de λ") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5)) + 
+  ylim(-1,0.5) + 
+  ylab("coeficientes") + 
+  xlab("λ") 
+```
+
+métricas de error
+```{r}
+ridge.pred.train <- predict(ridge,  newx = data.matrix(x_train))
+ridge.pred.test <- predict(ridge, newx = data.matrix(x_test))
+```
+```{r}
+postResample(y_train, ridge.pred.train)[c(1,3)]
+postResample(y_test, ridge.pred.test) [c(1,3)]
+ridge.r2_test <-1 - (sum((y_test - ridge.pred.test)^2)/sum((y_test - mean(y_test))^2))
+ 
+ridge.rtrain <- 1-(115/91)*(1-postResample(y_train, ridge.pred.train)[2])#calculo deradjusted del train
+ridge.rtest <- 1-(66/43)*(1-ridge.r2_test) #calculo de radjusted para el test
+
+ridge.rtrain
+ridge.rtest
+```
+
+
+
+
+
+
+
+## Lasso
+
+```{r, warning = FALSE}
+cv.lasso <- cv.glmnet(data.matrix(x_train),
+                      y_train, 
+                      alpha = 1,
+                      lambda = lambdas, 
+                      nfolds = nrow(x_train)) #loocv
+
+lasso <- glmnet(x = data.matrix(x_train),
+                y = y_train,
+                alpha = 1,
+                lambda  = cv.lasso$lambda.min)
+```
+
+```{r, warning = FALSE}
+paste("Mejor valor de lambda encontrado:", cv.lasso$lambda.min)
+```
+Evolución del error en funcion de lambda
+```{r, warning = FALSE}
+ggplot(data = NULL, aes(log(cv.lasso$lambda), sqrt(cv.lasso$cvm))) + 
+  geom_point() +
+  xlab('log(λ)') + 
+  ylab('RMSE') + 
+  geom_vline(xintercept = log(cv.lasso$lambda.min), linetype="dashed", 
+                color = "red", size=0.5)
+```
+cambio percentual de coeficientes
+```{r}
+cambio <-(coef(lasso) - coef(rl))/coef(rl)
+cambio_lasso_coeficientes <- cambio  %>%
+                   as.matrix() %>%
+                   as_tibble(rownames = "predictor") %>%
+                   rename(coeficiente = s0)
+
+print(cambio_lasso_coeficientes, n = 24) 
+```
+
+evolución de los coeficientes en función de lambda
+```{r, warning = FALSE}
+lasso2 <- glmnet(x = data.matrix(x_train),
+                y = y_train,
+                alpha = 1,
+                lambda  = rev(seq(0,100, by = 0.1)))
+
+regularizacion_lasso <- lasso2$beta %>% 
+                  as.matrix() %>%
+                  t() %>% 
+                  as_tibble() %>%
+                  mutate(lambda = lasso2$lambda)
+
+d_lasso <- melt(regularizacion_lasso, id.vars="lambda")
+
+ggplot(d_lasso, aes(lambda, value, col=variable)) +
+  geom_line() +
+  labs(title = "Coeficientes del modelo en función de λ") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5)) + 
+  ylim(-0.3,0.5) + 
+  xlim(0,7) +
+  ylab("coeficientes") + 
+  xlab("λ")
+```
+
+
+métricas de error
+```{r}
+lasso.pred.train <- predict(lasso, newx = data.matrix(x_train))
+lasso.pred.test <- predict(lasso, newx = data.matrix(x_test))
+
+postResample(y_train, lasso.pred.train) [c(1,3)]
+postResample(y_test, lasso.pred.test) [c(1,3)]
+lasso.r2_test <-1 - (sum((y_test - lasso.pred.test)^2)/sum((y_test - mean(y_test))^2))
+ 
+lasso.rtrain <- 1-(115/91)*(1-postResample(y_train, lasso.pred.train)[2])#calculo deradjusted del train
+lasso.rtest <- 1-(66/55)*(1-lasso.r2_test) #calculo de radjusted para el test
+
+lasso.rtrain
+lasso.rtest
+```
+
+
+
+
+
+
+
+## ElasticNet
+
+
+se utiliza paquete caret, aunque este llama a glmnet igulamente
+se busca la mejor combinacion de alpha y lambda 
+```{r}
+#tengo que quitar los rownames porq sino no funciona
+train2 <- train
+rownames(train2) <- NULL
+
+ElasticNetGrid <-  expand.grid(lambda = rev(seq(0, 1.25, by = 0.01)),   #hacemos una grid con lambda de 0 a 1 (se podria coger mas pero antes hemos visto que no sera util) y alpha de 0 a 1 
+                               alpha = seq(0, 1, by = 0.1))  
+
+cv.ElasticNet <- train(esperanza_vida ~., 
+               data = train2, 
+               method = "glmnet",
+               trControl = trainControl("LOOCV"),
+               tuneGrid = ElasticNetGrid
+               )
+```
+
+mejores parámetros
+```{r}
+cv.ElasticNet$bestTune
+```
+
+cambio de coeficientes en comparacion con regresion lineal mco
+```{r}
+coef(cv.ElasticNet$finalModel, cv.ElasticNet$bestTune$lambda)
+
+cambio <-(coef(cv.ElasticNet$finalModel, cv.ElasticNet$bestTune$lambda) - coef(rl))/coef(rl)
+cambio_ElasticNet_coeficientes <- cambio  %>%
+                   as.matrix() %>%
+                   as_tibble(rownames = "predictor") %>%
+                   rename(coeficiente = 2)
+
+print(cambio_ElasticNet_coeficientes, n = 24) #ejcutar esto en la console para q salga con colores
+```
+
+error en función de alpha y lambda
+```{r, warning = FALSE}
+ggplot(cv.ElasticNet$results, aes(x = lambda, y = alpha, fill = RMSE)) + 
+  geom_tile() +
+   scale_fill_gradient2(low="white", mid="aquamarine3", high="black", midpoint=3.1) +
+  labs(x = 'λ', y = 'α', colour = 'RMSE' ) +
+  annotate("point", x = 0.74, y = 0.3, colour = "firebrick2", size = 3) + 
+  annotate("text", x = 0.74, y = 0.25, colour = "firebrick2", size = 2.8, label = "RMSE mínimo")
+```
+
+otra manera de verlo
+```{r, warning = FALSE}
+ggplot(data = cv.ElasticNet$results, aes(x = lambda, y = RMSE, color = factor(alpha))) + 
+  geom_line(size = 1) +
+  labs(x = 'λ', y = 'RMSE', colour = 'α' ) + 
+  theme(legend.position = c(0.3, 0.85),
+        legend.direction = "horizontal",
+        legend.background = element_rect(fill = "lightblue2"),
+        legend.key = element_rect(fill = "lightblue2", color = NA),
+        legend.key.size = unit(0.4, "cm"),
+        legend.key.width = unit(0.3,"cm")) +
+  annotate("point", x = 0.74, y = 2.868, colour = "firebrick2", size = 3) + 
+  annotate("text", x = 0.74, y = 2.851, colour = "firebrick2", size = 2.8, label = "RMSE mínimo")
+  
+```
+
+métricas de error
+```{r}
+ElasticNet.pred.train <- predict(cv.ElasticNet, x_train)
+ElasticNet.pred.test <- predict(cv.ElasticNet, x_test)
+
+postResample(y_train, ElasticNet.pred.train) [c(1,3)]
+postResample(y_test, ElasticNet.pred.test) [c(1,3)]
+ElasticNet.r2_test <-1 - (sum((y_test - ElasticNet.pred.test)^2)/sum((y_test - mean(y_test))^2))
+ 
+ElasticNet.rtrain <- 1-(115/91)*(1-postResample(y_train, ElasticNet.pred.train)[2])#calculo deradjusted del train
+ElasticNet.rtest <- 1-(66/54)*(1-ElasticNet.r2_test) #calculo de radjusted para el test
+
+ElasticNet.rtrain
+ElasticNet.rtest
+```
+
+
+
+
+## Group Lasso
+
+```{r}
+index = c(1,1,2,2,2,2,2,2,2,2,3,3,3,4,5,5,5,5,6,6,7,7,7)
+#la funcion da error porque la variable poblacion tiene numeros muy grandes, la divido por 1000000 para tener habitantes en millones
+x_train_aux <- x_train 
+x_train_aux$Poblacion <- x_train$Poblacion/1000000
+
+x_test_aux <- x_test 
+x_test_aux$Poblacion <- x_test$Poblacion/1000000
+```
+
+
+```{r}
+#cv.group_lasso <- cv.gglasso(x = data.matrix(x_train_aux),
+                            # y = y_train,
+                             #group = index,
+                             #pred.loss = "L1",
+                             #lambda = rev(seq(0, 5, by = 0.1)),
+                             #nfolds = nrow(x_train_aux),
+                             #loss="ls")
+```
+```{r}
+group_lasso <- gglasso(x = data.matrix(x_train_aux),
+         y = y_train,
+         group = index,
+         loss = "ls",
+         lambda = 0.6) #cv.group_lasso$lambda.min
+```
+
+coeficientes obtenidos con lambda optimo (0.6)
+```{r}
+coef(group_lasso)
+```
+
+
+evolución de los coeficientes en función de lambda
+```{r, warning = FALSE}
+group_lasso2 <- gglasso(x = data.matrix(x_train_aux),
+         y = y_train,
+         group = index,
+         loss = "ls",
+         lambda = c(250,200,150,100,80,60,40,20,10,5,3,2,1))
+
+regularizacion_group_lasso <- group_lasso2$beta %>% 
+                  as.matrix() %>%
+                  t() %>% 
+                  as_tibble() %>%
+                  mutate(lambda = group_lasso2$lambda)
+
+d_group_lasso <- melt(regularizacion_group_lasso, id.vars="lambda")
+
+ggplot(d_group_lasso, aes(lambda, value, col=variable)) +
+  geom_line() +
+  scale_color_manual(values=c(rep('coral2', 2), rep('lightblue2', 8), rep('chartreuse2', 3), rep('cyan2', 1), rep('black', 4), rep('purple', 2), rep('grey', 3))) +
+  labs(title = "Coeficientes del modelo en función de λ") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5)) +
+  ylab("coeficientes") + 
+  xlim(0,200) +
+  xlab("λ")
+```
+
+métricas de error
+```{r}
+group_lasso.pred.train <- predict(group_lasso,  newx = data.matrix(x_train_aux))
+group_lasso.pred.test <- predict(group_lasso, newx = data.matrix(x_test_aux))
+```
+```{r}
+postResample(y_train, group_lasso.pred.train) [c(1,3)]
+postResample(y_test, group_lasso.pred.test) [c(1,3)]
+group_lasso.r2_test <-1 - (sum((y_test - group_lasso.pred.test)^2)/sum((y_test - mean(y_test))^2))
+ 
+group_lasso.rtrain <- 1-(115/91)*(1-postResample(y_train, group_lasso.pred.train)[2])#calculo deradjusted del train
+group_lasso.rtest <- 1-(66/43)*(1-group_lasso.r2_test) #calculo de radjusted para el test
+
+group_lasso.rtrain
+group_lasso.rtest
+```
+
+
+
+
+
+
+
+## PCR
+
+```{r}
+PCR <- pcr(esperanza_vida ~ ., data = train, scale = TRUE, validation = "LOO")
+```
+```{r}
+summary(PCR)
+```
+
+tabla del error en función del número de componentes
+```{r}
+error_cv <- MSEP(PCR, estimate = "CV")
+dif <- c(0)
+for (i in 1:23) {
+  dif <- c(dif,((sqrt(error_cv$val[i+1]) - sqrt(error_cv$val[i])) / sqrt(error_cv$val[i])))
+}
+dif <- dif  %>% 
+  as.matrix() %>% 
+  as_tibble()
+
+tabla_error <- data.frame(
+              componentes = seq_along(as.vector(error_cv$val)) - 1,
+              RMSE       = as.vector(sqrt(error_cv$val)),
+              cambio_porcentual = round(dif,3)
+            ) %>% as_tibble() %>%
+                   rename(diferencia = V1)
+print(tabla_error, n = 24)
+```
+
+```{r}
+validationplot(PCR, val.type = "RMSEP", xlab = 'número de componentes', ylab = 'RMSE', lwd = 3, lty = 1, col = 'darkorange3')
+```
+minimo esta en 23 pero se puede coger 14 para simplicar modelo
+
+correlación entre componentes y variable respuesta
+```{r}
+cor(train$esperanza_vida,PCR$scores)
+```
+
+métricas de error
+```{r}
+pcr.pred.train <- predict(PCR,  train, ncomp = 14)
+pcr.pred.test <- predict(PCR, test, ncomp = 14)
+postResample(y_train, pcr.pred.train)[c(1,3)]
+postResample(y_test, pcr.pred.test)[c(1,3)]
+
+pcr.r2_test <-1 - (sum((y_test - pcr.pred.test)^2)/sum((y_test - mean(y_test))^2))
+ 
+pcr.rtrain <- 1-(115/91)*(1-postResample(y_train, pcr.pred.train)[2])#calculo deradjusted del train
+pcr.rtest <- 1-(66/52)*(1-pcr.r2_test) #calculo de radjusted para el test
+
+pcr.rtrain
+pcr.rtest
+```
+
+
+
+
+
+## PLS
+```{r}
+PLS <- plsr(esperanza_vida ~ ., data = train, scale = TRUE, validation = "LOO")
+```
+```{r}
+summary(PLS)
+```
+
+tabla del error en función del número de componentes
+```{r}
+error_cv2 <- MSEP(PLS, estimate = "CV")
+dif2 <- c(0)
+for (i in 1:23) {
+  dif2 <- c(dif2,((sqrt(error_cv2$val[i+1]) - sqrt(error_cv2$val[i])) / sqrt(error_cv2$val[i])))
+}
+dif2 <- dif2  %>% 
+  as.matrix() %>% 
+  as_tibble()
+
+tabla_error2 <- data.frame(
+              componentes = seq_along(as.vector(error_cv2$val)) - 1,
+              RMSE       = as.vector(sqrt(error_cv2$val)),
+              cambio_porcentual = round(dif2,3)
+            ) %>% as_tibble() %>%
+                   rename(diferencia = V1)
+print(tabla_error2, n = 24)
+```
+```{r}
+validationplot(PLS, val.type = "RMSEP", xlab = 'número de componentes', ylab = 'RMSE', lwd = 3, lty = 1, col = 'darkorange3')
+```
+
+correlación entre componentes y variable respuesta
+```{r}
+cor(train$esperanza_vida,PLS$scores)
+```
+
+métricas de error
+```{r}
+pls.pred.train <- predict(PLS,  train, ncomp = 10)
+pls.pred.test <- predict(PLS, test, ncomp = 10)
+postResample(y_train, pls.pred.train)[c(1,3)]
+postResample(y_test, pls.pred.test)[c(1,3)]
+pls.r2_test <-1 - (sum((y_test - pls.pred.test)^2)/sum((y_test - mean(y_test))^2))
+ 
+pls.rtrain <- 1-(115/91)*(1-postResample(y_train, pls.pred.train)[2])#calculo deradjusted del train
+pls.rtest <- 1-(66/56)*(1-pls.r2_test) #calculo de radjusted para el test
+
+pls.rtrain
+pls.rtest
+```
+
+
+
+
+
+###RESULTADOS TOTALES###
+```{r}
+comparacion_train <- data.frame(Train = c("Regresión Lineal", "Ridge", "Lasso", "ElasticNet", "Group Lasso", "PCR", "PLS"),
+                                
+                                RMSE   = c(postResample(y_train, rl.pred.train)[1],
+                                                 postResample(y_train, ridge.pred.train)[1],
+                                                 postResample(y_train, lasso.pred.train)[1],
+                                                 postResample(y_train, ElasticNet.pred.train)[1],
+                                                 postResample(y_train, group_lasso.pred.train)[1],
+                                                 postResample(y_train, pcr.pred.train)[1],
+                                                 postResample(y_train, pls.pred.train)[1]) ,
+                      
+                          
+                          
+                                MAE   = c(postResample(y_train, rl.pred.train)[3],
+                                                 postResample(y_train, ridge.pred.train)[3],
+                                                 postResample(y_train, lasso.pred.train)[3],
+                                                 postResample(y_train, ElasticNet.pred.train)[3],
+                                                 postResample(y_train, group_lasso.pred.train)[3],
+                                                 postResample(y_train, pcr.pred.train)[3],
+                                                 postResample(y_train, pls.pred.train)[3]) ,
+                          
+                                
+                          
+                          
+                                R2_adj = c(rl.rtrain,
+                                                 ridge.rtrain,
+                                                 lasso.rtrain,
+                                                 ElasticNet.rtrain,
+                                                 group_lasso.rtrain,
+                                                 pcr.rtrain,
+                                                 pls.rtrain)
+                              )
+```
+```{r}
+unit.scale = function(x) (x-mean(x) + 0.4)
+unit.scale2 = function(x) (x-mean(x) + 0.3)
+
+formattable(comparacion_train,
+            list(Train = formatter("span", style = ~ style(color = "grey", font.weight = "bold")), 
+                 RMSE = color_bar("#CCFFFF", fun = unit.scale),
+                 MAE  = color_bar("#CCFFFF", fun = unit.scale),
+                 R2_adj = color_bar("#CCFFFF", fun = unit.scale2)
+                 )
+            )
+```
+
+```{r}
+comparacion_test <- data.frame(Test = c("Regresión Lineal", "Ridge", "Lasso", "ElasticNet", "Group Lasso", "PCR", "PLS"),
+                                
+                          
+                          
+                                RMSE   = c(postResample(y_test,  rl.pred.test)[1],
+                                                 postResample(y_test, ridge.pred.test)[1],
+                                                 postResample(y_test, lasso.pred.test)[1],
+                                                 postResample(y_test, ElasticNet.pred.test)[1],
+                                                 postResample(y_test, group_lasso.pred.test)[1],
+                                                 postResample(y_test, pcr.pred.test)[1],
+                                                 postResample(y_test, pls.pred.test)[1]) ,
+                          
+                                MAE   = c(postResample(y_test,  rl.pred.test)[3],
+                                                 postResample(y_test, ridge.pred.test)[3],
+                                                 postResample(y_test, lasso.pred.test)[3],
+                                                 postResample(y_test, ElasticNet.pred.test)[3],
+                                                 postResample(y_test, group_lasso.pred.test)[3],
+                                                 postResample(y_test, pcr.pred.test)[3],
+                                                 postResample(y_test, pls.pred.test)[3]) ,
+                              
+                                R2_adj = c(rl.rtest,
+                                           ridge.rtest,
+                                           lasso.rtest,
+                                           ElasticNet.rtest,
+                                           group_lasso.rtest,
+                                           pcr.rtest,
+                                           pls.rtest)
+                              )
+```
+```{r}
+unit.scale = function(x) (x-mean(x)+0.5)
+unit.scale2 = function(x) ((x-mean(x))/max(x) + 0.3)
+
+formattable(comparacion_test,
+            list(Test = formatter("span", style = ~ style(color = "grey", font.weight = "bold")), 
+                 RMSE = color_bar("#CCFFFF", fun = unit.scale),
+                 MAE  = color_bar("#CCFFFF", fun = unit.scale),
+                 R2_adj  = color_bar("#CCFFFF", fun = unit.scale2)
+                 )
+            )
+```
+
+
+
+
+
+
+
+
+
+
+

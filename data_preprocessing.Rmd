@@ -1,0 +1,167 @@
+---
+title: "Data Prepocessing"
+author: "Álvaro Garnica"
+date: "21/10/2020"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+##### Carga de librerías
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+library(reshape2)
+library(DMwR)
+library(corrplot)
+library(naniar)
+```
+
+
+#### Importación de datos y vista previa
+```{r }
+data <- read.csv2('BBDD.csv', header = TRUE, na.strings = '-', row.names = 1)
+str(data)
+```
+
+
+## Tratamiento de missings
+
+Visualizamos el número de missings
+```{r}
+vis_miss(data, sort_miss = TRUE, show_perc = FALSE) +
+    theme(text = element_text(size=6.5)) + ylab('Observaciones') +
+    theme(legend.position = c(0.05, 1.4))
+```
+
+
+Eliminamos los países donde no hay información sobre la variable respuesta (esperanza_vida)
+```{r}
+row.names(data[!complete.cases(data[,'esperanza_vida']), ])
+data <- data[complete.cases(data[,'esperanza_vida']), ]
+```
+
+
+A algunos países les falta mucha información, eliminemos aquellos países que contengan más del 50% de valores faltantes
+```{r}
+row.names(data[which(rowMeans(is.na(data)) > 0.5), ])
+data <- data[which(rowMeans(!is.na(data)) > 0.5), ]
+```
+
+Veamos que porcentaje de missings contiene cada variable
+```{r}
+apply(is.na(data),2,sum)/nrow(data)
+```
+Este número es demasiado elevado en algunos casos, decidimos eliminar las variables con más del 50% de missings
+```{r}
+colnames(data[colSums(is.na(data))/nrow(data) > .5])
+data <- data[colSums(is.na(data))/nrow(data) < .5]
+```
+
+
+Se imputan el resto de datos. 
+```{r}
+data<-knnImputation(data, k = 6, scale = T, meth = "weighAvg", distData = NULL)
+```
+
+
+
+
+## Feature engineering
+
+Las variables VIH_049 y muertes_est_SIDA deben ser ponderadas en función de la población
+```{r}
+data$VIH_049 <- round((data$VIH_049/data$Poblacion) * 1000, 3)
+data$muertes_est_SIDA <- round((data$muertes_est_SIDA/data$Poblacion) * 1000, 3)
+```
+
+
+
+Se crea la variable de tasa de crecimiento, la cual es igual a la tasa de natalidad menos la tasa de mortalidad
+```{r}
+data$tasa_mortalidad <- data$tasa_natalidad - data$tasa_mortalidad
+names(data)[names(data) == 'tasa_mortalidad'] <- 'tasa_crecimiento_anual'
+data$tasa_natalidad <- NULL
+```
+
+
+Se estudia la correlación 
+```{r}
+unique(head(sort(cor(data[-1]), decreasing = TRUE)[sort(prueba, decreasing = TRUE) != 1], 6))#top 3 correlaciones positivas
+unique(tail(sort(cor(data[-1]), decreasing = TRUE),6)) #top 3 correlaciones negativas
+```
+Hay una correlacion de mas de 95%, la cual equivale a VIH_049 y muertes_est_sida. Eliminamos la variables VIH_049.
+variables gasto_corriente_sanitario y gasto_corriente_sanitario_pc así como gasto_sanitario_privado y gasto_sanitario_privado_pc se correlacionan entre sí. Eliminamos las variables en términos per cápita.
+```{r}
+data$VIH_049 <- NULL
+data$gasto_corriente_sanitario_pc <- NULL
+data$gasto_sanitario_privado_pc <- NULL
+```
+
+
+
+
+Se crean los atributos 'descripcion_variables' y 'unidad_variables' de las variables
+```{r}
+attributes(data)$descripcion_variables <- c('Código del País',
+                                            'Tasa de fertilidad',
+                                            'Tasa de fecundidad adolescente',
+                                            'Nacimientos bajo peso',
+                                            'Muertes estimadas por SIDA',
+                                            'Médicos',
+                                            'Prevalencia de la desnutrición',
+                                            'Prevalencia del sobrepeso',
+                                            'Uso de agua potable',
+                                            'Uso servicios básicos de saneamiento',
+                                            'Incidencia malaria',
+                                            'Gasto de capital sanitario',
+                                            'Gasto corriente sanitario',
+                                            'Gasto privado sanitario',
+                                            'Tasa de suicidio',
+                                            'Tasa de dependencia',
+                                            'Tasa de desempleo',
+                                            'Fuerza laboral, mujeres',
+                                            'Beneficios por baja de maternidad',
+                                            'Tasa de finalización de educación primaria',
+                                            'Gasto público en educación',
+                                            'Población rural',
+                                            'Tasa de crecimiento anual',
+                                            'Esperanza de vida',
+                                            'Población')
+
+attributes(data)$unidad_variables <- c('',
+                                       'hijos por mujer',
+                                       'nacimientos por cada 1000 mujeres de 15 a 19 años',
+                                       '% del total',
+                                       'por 1000 habitantes',
+                                       'por 1000 habitantes',
+                                       '% de la población',
+                                       '% de la población adulta',
+                                       '% de la población',
+                                       '% de la población',
+                                       'casos por año por 100 habitantes en riesgo',
+                                       '% del PIB',
+                                       '% del PIB',
+                                       '% del gasto corriente sanitario',
+                                       'por 100000 habitantes',
+                                       '% de la población en edad laboral',
+                                       '% de la fuerza laboral total',
+                                       '% de la fuerza laboral total',
+                                       '% del sueldo remunerado',
+                                       '% del grupo de edad relevante',
+                                       '% del PIB',
+                                       '% de la población total',
+                                       '%',
+                                       'años',
+                                       'habitantes')
+```
+
+
+se guardan los datos finales en formato RData
+```{r echo=FALSE}
+save(data, file = "data.RData")
+```
+
+
+
